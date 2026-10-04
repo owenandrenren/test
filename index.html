@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Real-Time P2P Item Tosser</title>
+    <style>
+      body {
+        font-family:
+          system-ui,
+          -apple-system,
+          sans-serif;
+        background-color: #111;
+        color: #fff;
+        margin: 0;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        height: 100vh;
+      }
+      #setup-zone {
+        background: #222;
+        padding: 20px;
+        border-radius: 12px;
+        text-align: center;
+        max-width: 90%;
+        z-index: 10;
+      }
+      textarea {
+        width: 100%;
+        height: 60px;
+        background: #333;
+        color: #fff;
+        border: 1px solid #444;
+        margin: 5px 0;
+        font-family: monospace;
+        resize: none;
+      }
+      button {
+        background: #007bff;
+        color: white;
+        border: none;
+        padding: 12px 24px;
+        font-weight: bold;
+        border-radius: 6px;
+        cursor: pointer;
+        width: 100%;
+        margin-top: 5px;
+      }
+      #canvas-stage {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100vh;
+        display: none;
+      }
+      .ball {
+        position: absolute;
+        width: 70px;
+        height: 70px;
+        background: radial-gradient(circle at 30% 30%, #ff4b4b, #a30000);
+        border-radius: 50%;
+        box-shadow: 0 10px 20px rgba(0, 0, 0, 0.5);
+        cursor: grab;
+        user-select: none;
+      }
+      .status-pill {
+        position: absolute;
+        top: 20px;
+        background: rgba(255, 255, 255, 0.1);
+        padding: 6px 16px;
+        border-radius: 20px;
+        font-size: 14px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="status-pill" id="status">Setup Connection Below</div>
+
+    <!-- Step 1: WebRTC Handshake -->
+    <div id="setup-zone">
+      <h3>⚡ Real-Time P2P Tosser</h3>
+      <button id="btn-device-a">I am Device A (Sender)</button>
+      <button id="btn-device-b" style="background: #28a745; margin-top: 10px">
+        I am Device B (Receiver)
+      </button>
+
+      <div id="signaling" style="display: none; margin-top: 15px">
+        <p id="instruction"></p>
+        <textarea id="local-sdp" readonly onclick="this.select()"></textarea>
+        <textarea
+          id="remote-sdp"
+          placeholder="Paste peer code here..."></textarea>
+        <button id="btn-connect" style="background: #ffc107; color: #111">
+          Link Screens
+        </button>
+      </div>
+    </div>
+
+    <!-- Step 2: The Shared Arena -->
+    <div id="canvas-stage">
+      <div id="toss-ball" class="ball" style="display: none"></div>
+    </div>
+
+    <script>
+      const config = { iceServers: [{ urls: "stun:://google.com" }] };
+      let pc = new RTCPeerConnection(config);
+      let dataChannel;
+      let isDeviceA = false;
+
+      // Physics state tracking
+      const ball = document.getElementById("toss-ball");
+      const stage = document.getElementById("canvas-stage");
+      const status = document.getElementById("status");
+      let isDragging = false;
+      let startY, currentY, startTime, endTime;
+
+      // WebRTC Setup Triggers
+      document
+        .getElementById("btn-device-a")
+        .addEventListener("click", async () => {
+          isDeviceA = true;
+          initSignaling("1. Copy this code to Device B:");
+          dataChannel = pc.createDataChannel("tossChannel");
+          bindChannel(dataChannel);
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+        });
+
+      document.getElementById("btn-device-b").addEventListener("click", () => {
+        isDeviceA = false;
+        initSignaling(
+          "2. Paste code from A, click Link, then copy THIS code back:",
+        );
+        pc.ondatachannel = (e) => {
+          dataChannel = e.channel;
+          bindChannel(dataChannel);
+        };
+      });
+
+      function initSignaling(text) {
+        document.getElementById("btn-device-a").style.display = "none";
+        document.getElementById("btn-device-b").style.display = "none";
+        document.getElementById("signaling").style.display = "block";
+        document.getElementById("instruction").innerText = text;
+      }
+
+      pc.onicecandidate = (e) => {
+        if (!e.candidate)
+          document.getElementById("local-sdp").value = btoa(
+            JSON.stringify(pc.localDescription),
+          );
+      };
+
+      document
+        .getElementById("btn-connect")
+        .addEventListener("click", async () => {
+          const raw = document.getElementById("remote-sdp").value.trim();
+          if (!raw) return;
+          const desc = new RTCSessionDescription(JSON.parse(atob(raw)));
+          await pc.setRemoteDescription(desc);
+          if (!isDeviceA && pc.remoteDescription.type === "offer") {
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+          }
+        });
+
+      function bindChannel(channel) {
+        channel.onopen = () => {
+          document.getElementById("setup-zone").style.display = "none";
+          stage.style.display = "block";
+          status.innerText = "🟢 Connected! Ready to toss.";
+
+          // Device A starts with the ball in the center floor
+          if (isDeviceA) {
+            spawnBall(window.innerWidth / 2 - 35, window.innerHeight - 120);
+          }
+        };
+
+        channel.onmessage = (e) => {
+          const msg = JSON.parse(e.data);
+          if (msg.type === "toss-enter") {
+            // Ball entered from the top of our screen!
+            status.innerText = "🫴 Caught it!";
+            spawnBall(msg.x * window.innerWidth, -70);
+
+            // Animate entry flight tracking velocity
+            ball.style.transition =
+              "top 0.4s cubic-bezier(0.1, 0.8, 0.3, 1), left 0.4s linear";
+            setTimeout(() => {
+              ball.style.top = window.innerHeight / 2 - 35 + "px";
+            }, 50);
+          }
+        };
+      }
+
+      function spawnBall(x, y) {
+        ball.style.transition = "none";
+        ball.style.display = "block";
+        ball.style.left = x + "px";
+        ball.style.top = y + "px";
+      }
+
+      // Touch and Drag interaction logic
+      ball.addEventListener("mousedown", startDrag);
+      ball.addEventListener("touchstart", (e) => startDrag(e.touches[0]));
+
+      function startDrag(e) {
+        isDragging = true;
+        ball.style.transition = "none";
+        startY = e.clientY;
+        startTime = performance.now();
+      }
+
+      window.addEventListener("mousemove", drag);
+      window.addEventListener("touchmove", (e) => drag(e.touches[0]));
+
+      function drag(e) {
+        if (!isDragging) return;
+        currentY = e.clientY;
+        ball.style.top = currentY - 35 + "px";
+        ball.style.left = e.clientX - 35 + "px";
+      }
+
+      window.addEventListener("mouseup", endDrag);
+      window.addEventListener("touchend", endDrag);
+
+      function endDrag() {
+        if (!isDragging) return;
+        isDragging = false;
+        endTime = performance.now();
+
+        const distanceY = startY - currentY; // Upward travel distance
+        const duration = endTime - startTime;
+        const velocity = distanceY / duration; // Pixels per millisecond
+
+        // If swiped up quickly enough, trigger the exit transition
+        if (velocity > 0.6) {
+          status.innerText = "🚀 Tossing item...";
+          ball.style.transition = "top 0.2s ease-in";
+          ball.style.top = "-100px"; // Animate off the top edge
+
+          // Calculate percentage horizontal footprint where ball left screen
+          const relativeX = parseFloat(ball.style.left) / window.innerWidth;
+
+          setTimeout(() => {
+            ball.style.display = "none";
+            dataChannel.send(
+              JSON.stringify({
+                type: "toss-enter",
+                x: relativeX,
+              }),
+            );
+          }, 200);
+        } else {
+          // Snap back down if velocity was too weak
+          ball.style.transition = "top 0.2s ease-out";
+          ball.style.top = window.innerHeight - 120 + "px";
+        }
+      }
+    </script>
+  </body>
+</html>
